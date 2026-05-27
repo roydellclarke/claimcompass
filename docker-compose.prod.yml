@@ -1,0 +1,35 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - claimcompass
+
+  backend:
+    image: ghcr.io/roydellclarke/claimcompass-backend:v1.0.5
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - claimcompass
+
+  frontend:
+    image: ghcr.io/roydellclarke/claimcompass-frontend:v1.0.5
+    ports:
+      - "3400:3000"
+    environment:
+      # Frontend proxies /api/* here. "backend" resolves via the shared
+      # docker network below. Override only if backend runs elsewhere.
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - claimcompass
+
+networks:
+  claimcompass:
+    driver: bridge
