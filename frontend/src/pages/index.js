@@ -4,6 +4,21 @@ import axios from 'axios';
 // useLayoutEffect logs a warning during SSR; fall back to useEffect on the server.
 const useIsoLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
+const AUTH_TOKEN_KEY = 'cc_auth_token';
+
+// Attach the stored JWT to every request. Lives at module scope so it's
+// installed exactly once, before any request fires.
+axios.interceptors.request.use(config => {
+  if (typeof window !== 'undefined') {
+    const token = window.localStorage.getItem(AUTH_TOKEN_KEY);
+    if (token) {
+      config.headers = config.headers || {};
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+  }
+  return config;
+});
+
 const StableInput = memo(({ placeholder, onValueChange, initialValue = '', type = "text", inputMode = "text" }) => {
   const [value, setValue] = useState(initialValue);
 
@@ -442,7 +457,147 @@ const PageShell = memo(({ currentStep, renderStep, onForward, onBack, canForward
 });
 PageShell.displayName = 'PageShell';
 
+// Centered card layout used by the auth screen — visually matches the
+// in-flow Card but stands on its own background so it can host the full
+// login/signup experience before the wizard ever mounts.
+const AuthShell = memo(({ children }) => (
+  <div style={{
+    minHeight: '100vh',
+    background: 'linear-gradient(180deg, #fff7ed 0%, #f8fafc 30%, #f8fafc 100%)',
+    fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+    color: '#0f172a',
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    padding: '40px 18px',
+  }}>
+    <div style={{ width: '100%', maxWidth: 440 }}>
+      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 24 }}>
+        <Logo />
+      </div>
+      {children}
+    </div>
+  </div>
+));
+AuthShell.displayName = 'AuthShell';
+
+const AuthScreen = ({ onAuthed }) => {
+  const [mode, setMode] = useState('login'); // 'login' | 'signup'
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const isSignup = mode === 'signup';
+
+  const submit = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    setError('');
+    if (!email || !password) {
+      setError('Email and password are required.');
+      return;
+    }
+    if (isSignup && password.length < 8) {
+      setError('Password must be at least 8 characters.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const url = isSignup ? '/api/auth/register' : '/api/auth/login';
+      const body = isSignup ? { email, password, name: name || undefined } : { email, password };
+      const res = await axios.post(url, body);
+      window.localStorage.setItem(AUTH_TOKEN_KEY, res.data.token);
+      onAuthed(res.data.user);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      const msg = Array.isArray(detail)
+        ? detail.map(d => d.msg).join(', ')
+        : detail || err.message || 'Something went wrong.';
+      setError(msg);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const inputStyle = {
+    width: '100%', boxSizing: 'border-box', padding: '14px 16px', marginBottom: 12,
+    border: '1px solid #e2e8f0', borderRadius: 12, fontSize: 16, background: '#fff',
+    outline: 'none', display: 'block', fontFamily: 'inherit',
+  };
+
+  return (
+    <AuthShell>
+      <Card>
+        <h1 style={{ fontSize: 26, fontWeight: 700, margin: '0 0 6px 0', color: '#0f172a', letterSpacing: '-0.02em' }}>
+          {isSignup ? 'Create your account' : 'Sign in'}
+        </h1>
+        <p style={{ color: '#64748b', marginBottom: 20, fontSize: 15 }}>
+          {isSignup ? 'Track your claim from a single secure account.' : 'Welcome back. Pick up where you left off.'}
+        </p>
+
+        <form onSubmit={submit} noValidate>
+          {isSignup && (
+            <input
+              type="text"
+              placeholder="Full name (optional)"
+              autoComplete="name"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              style={inputStyle}
+            />
+          )}
+          <input
+            type="email"
+            placeholder="Email"
+            autoComplete="email"
+            inputMode="email"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            style={inputStyle}
+            required
+          />
+          <input
+            type="password"
+            placeholder={isSignup ? 'Password (min 8 characters)' : 'Password'}
+            autoComplete={isSignup ? 'new-password' : 'current-password'}
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            style={inputStyle}
+            required
+            minLength={isSignup ? 8 : 1}
+          />
+
+          {error && (
+            <div role="alert" style={{
+              background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca',
+              padding: '10px 14px', borderRadius: 12, marginBottom: 12, fontSize: 14,
+            }}>{error}</div>
+          )}
+
+          <Button onClick={submit} disabled={submitting}>
+            {submitting ? (isSignup ? 'Creating account...' : 'Signing in...') : (isSignup ? 'Create account' : 'Sign in')}
+          </Button>
+        </form>
+
+        <div style={{ marginTop: 18, textAlign: 'center', fontSize: 14, color: '#64748b' }}>
+          {isSignup ? 'Already have an account?' : "Don't have an account?"}{' '}
+          <button
+            type="button"
+            onClick={() => { setError(''); setMode(isSignup ? 'login' : 'signup'); }}
+            style={{ background: 'none', border: 'none', color: '#fb7185', fontWeight: 600, cursor: 'pointer', padding: 0, fontFamily: 'inherit', fontSize: 14 }}
+          >
+            {isSignup ? 'Sign in' : 'Create one'}
+          </button>
+        </div>
+      </Card>
+    </AuthShell>
+  );
+};
+
 export default function Home() {
+  const [authChecked, setAuthChecked] = useState(false);
+  const [user, setUser] = useState(null);
   const [sessionId, setSessionId] = useState(null);
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -470,11 +625,50 @@ export default function Home() {
     offerAmount: ''
   });
 
+  // On mount: if we have a stored token, validate it via /api/auth/me before
+  // showing the wizard. Invalid/expired → drop back to the auth screen.
   useEffect(() => {
+    const token = typeof window !== 'undefined' ? window.localStorage.getItem(AUTH_TOKEN_KEY) : null;
+    if (!token) {
+      setAuthChecked(true);
+      return;
+    }
+    axios.get('/api/auth/me')
+      .then(res => setUser(res.data.user))
+      .catch(() => window.localStorage.removeItem(AUTH_TOKEN_KEY))
+      .finally(() => setAuthChecked(true));
+  }, []);
+
+  // Once authenticated, start (or restart) the claim session.
+  useEffect(() => {
+    if (!user) return;
     axios.post('/api/start').then(res => {
       setSessionId(res.data.session_id);
       setWhatsNext(res.data.whats_next);
-    }).catch(err => console.error('Start error:', err));
+    }).catch(err => {
+      if (err.response?.status === 401) {
+        window.localStorage.removeItem(AUTH_TOKEN_KEY);
+        setUser(null);
+      } else {
+        console.error('Start error:', err);
+      }
+    });
+  }, [user]);
+
+  const handleLogout = useCallback(async () => {
+    try { await axios.post('/api/auth/logout'); } catch (e) { /* token already invalid is fine */ }
+    window.localStorage.removeItem(AUTH_TOKEN_KEY);
+    setUser(null);
+    setSessionId(null);
+    setStep(1);
+    setPhotos([]);
+    setSelectedTow(null);
+    setSelectedShop(null);
+    setNeedRental(false);
+    setInjurySeverity('none');
+    setAnalysis('');
+    setLegalReferralLink('');
+    setHasInjuries(false);
   }, []);
 
   const handleNext = useCallback(async (stepData) => {
@@ -867,15 +1061,52 @@ export default function Home() {
     onInjuryDescriptionChange, onOfferAmountChange,
   ]);
 
+  if (!authChecked) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        background: 'linear-gradient(180deg, #fff7ed 0%, #f8fafc 30%, #f8fafc 100%)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        color: '#64748b', fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+      }}>Loading…</div>
+    );
+  }
+
+  if (!user) {
+    return <AuthScreen onAuthed={u => setUser(u)} />;
+  }
+
   return (
-    <PageShell
-      currentStep={step}
-      renderStep={renderStep}
-      canForward={canForward}
-      canBack={step > 1}
-      onForward={swipeForward}
-      onBack={swipeBack}
-      enterDirection={direction}
-    />
+    <>
+      <div style={{
+        position: 'fixed', top: 12, right: 14, zIndex: 20,
+        display: 'flex', alignItems: 'center', gap: 10,
+        background: 'rgba(255,255,255,0.85)', border: '1px solid #e2e8f0',
+        borderRadius: 999, padding: '6px 10px 6px 14px', fontSize: 13,
+        color: '#475569', backdropFilter: 'blur(6px)',
+        fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+      }}>
+        <span style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {user.name || user.email}
+        </span>
+        <button
+          onClick={handleLogout}
+          style={{
+            background: 'none', border: 'none', color: '#fb7185',
+            fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', fontSize: 13,
+            padding: '4px 6px',
+          }}
+        >Log out</button>
+      </div>
+      <PageShell
+        currentStep={step}
+        renderStep={renderStep}
+        canForward={canForward}
+        canBack={step > 1}
+        onForward={swipeForward}
+        onBack={swipeBack}
+        enterDirection={direction}
+      />
+    </>
   );
 }
